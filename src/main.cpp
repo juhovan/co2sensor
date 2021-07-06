@@ -1,11 +1,17 @@
 #include "config.h"
 
 #include <Arduino.h>
+#include <SoftwareSerial.h>
 #include <PubSubClient.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266mDNS.h>
 
-#include "MHZ19.h"
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BME280.h>
+
+#define SEALEVELPRESSURE_HPA (1013.25)
+
+Adafruit_BME280 bme; // I2C
 
 #ifdef HTTPUpdateServer
 #include <ESP8266HTTPUpdateServer.h>
@@ -15,7 +21,7 @@ ESP8266WebServer httpUpdateServer(80);
 ESP8266HTTPUpdateServer httpUpdater;
 #endif
 
-MHZ19 sensor(RX_PIN, TX_PIN);
+SoftwareSerial readerSerial(RX_PIN, TX_PIN); // RX, TX
 WiFiClient espClient;
 PubSubClient client(espClient);
 
@@ -56,13 +62,21 @@ void checkConnection()
   digitalWrite(LED_BUILTIN, HIGH);
 }
 
+char buffer[16];
+int previousCo2 = 0;
+
 void setup()
 {
   Serial.begin(115200);
+  while (!Serial)
+    ;
+
   Serial.println("\nStarting");
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, LOW);
-  sensor.setAutoCalibration(false);
+
+  readerSerial.begin(9600);
+
   WiFi.setSleepMode(WIFI_NONE_SLEEP);
   WiFi.mode(WIFI_STA);
   WiFi.hostname(HOSTNAME);
@@ -89,52 +103,107 @@ void setup()
   client.setServer(MQTT_SERVER, MQTT_PORT);
 
   checkConnection();
+
+  unsigned status;
+
+  // default settings
+  status = bme.begin(0x76);
+  // You can also pass in a Wire library object like &Wire2
+  // status = bme.begin(0x76, &Wire2)
+  if (!status)
+  {
+    Serial.println("Could not find a valid BME280 sensor, check wiring, address, sensor ID!");
+    Serial.print("SensorID was: 0x");
+    Serial.println(bme.sensorID(), 16);
+    Serial.print("        ID of 0xFF probably means a bad address, a BMP 180 or BMP 085\n");
+    Serial.print("   ID of 0x56-0x58 represents a BMP 280,\n");
+    Serial.print("        ID of 0x60 represents a BME 280.\n");
+    Serial.print("        ID of 0x61 represents a BME 680.\n");
+    while (1)
+      delay(10);
+  }
 }
 
 void loop()
 {
   checkConnection();
   client.loop();
+  client.loop();
 
-  measurement_t m = sensor.getMeasurement();
-
-  if (!sensorReady)
+  if (readerSerial.available() >= 16)
   {
-    if (m.co2_ppm == 410    /* MH-Z19B magic number during warmup */
-        || m.co2_ppm == 500 /* MH-Z19C magic number during warmup */
-        || m.co2_ppm == 512 /* MH-Z19C magic number on first query */
-        || m.co2_ppm == -1) /* Invalid data, happens when the MCU on the sensor is still booting */
+    for (int i = 0; i < 16; i++)
     {
-      Serial.println("CO2 sensor not ready...");
-      for (int i = 0; i < UPDATE_INTERVAL_MS; i += 10)
-      {
-        digitalWrite(LED_BUILTIN, LOW);
-        delay(1);
-        digitalWrite(LED_BUILTIN, HIGH);
-        delay(9);
+      buffer[i] = readerSerial.read();
+      Serial.print(String(buffer[i], HEX) + " ");
+      if (i > 1 && buffer[i] == 0x4d && buffer[i - 1] == 0x42)
+      { // We are out of sync, start again
+        i = 1;
+        buffer[0] = 0x42;
+        buffer[1] = 0x4d;
+        Serial.println(" - Out of sync");
+        Serial.print("42 4d ");
       }
-      return;
+    }
+
+    Serial.println();
+
+    if (buffer[0] == 0x42 && buffer[1] == 0x4d)
+    {
+
+      const int value = (buffer[6] << 8) | buffer[7];
+
+      if (sensorReady == true || value != 511)
+      {
+        if (previousCo2 == 0 || abs(value - previousCo2) < 100)
+        {
+          sensorReady = true;
+          previousCo2 = value;
+          Serial.println("Received valid value: " + value);
+
+          char buf[256];
+          snprintf(buf, 256,
+                   "{\"mcu_name\":\"" MQTT_CLIENT_NAME "\","
+                   "\"co2\":%d,"
+                   "\"temperature\":%f,"
+                   "\"humidity\":%f,"
+                   "\"pressure\":%f}",
+                   value, bme.readTemperature(), bme.readHumidity(), bme.readPressure());
+          Serial.print("Publish to MQTT: ");
+          Serial.println(buf);
+          client.publish(MQTT_CLIENT_NAME "/state", buf);
+
+          client.loop();
+          client.loop();
+
+          Serial.println("Entering light sleep");
+          wifi_set_sleep_type(LIGHT_SLEEP_T);
+          delay(10000); // 10s
+          client.loop();
+        }
+        else
+        {
+          Serial.println("Received invalid value: " + value);
+        }
+      }
+      else
+      {
+        Serial.println("CO2 sensor not ready...");
+        for (int i = 0; i < UPDATE_INTERVAL_MS; i += 10)
+        {
+          digitalWrite(LED_BUILTIN, LOW);
+          delay(1);
+          digitalWrite(LED_BUILTIN, HIGH);
+          delay(9);
+        }
+        return;
+      }
     }
     else
     {
-      sensorReady = true;
+      Serial.println("Invalid header received!");
     }
   }
-
-  if (m.state == -1)
-  {
-    Serial.println("CO2 sensor in invalid state!");
-    return;
-  }
-
-  char buf[256];
-  snprintf(buf, 256,
-           "{\"mcu_name\":\"" MQTT_CLIENT_NAME "\","
-           "\"co2\":%d,"
-           "\"temperature\":%d,"
-           "\"status\":%d}",
-           m.co2_ppm, m.temperature, m.state);
-  client.publish(MQTT_CLIENT_NAME "/state", buf);
 
 #ifdef HTTPUpdateServer
   for (int i = 0; i < UPDATE_INTERVAL_MS; i += 10)

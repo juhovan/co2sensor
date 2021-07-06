@@ -1,6 +1,7 @@
 # CO2Sensor
 
-CO2 sensor for Home Assistant using a MH-Z19 CO2 sensor on a ESP8266 NodeMCU
+CO2 and temperature + humidity + pressure sensor for Home Assistant using an unknown Chinese CO2 sensor CO2-C8S and Bosch BME280 on a ESP8266 NodeMCU.
+CO2 Sensor uses same protocol and pinout as [DS-CO2-20 sensor](https://www.icbanq.com/icdownload/data/ICBShop/Board/DS-CO2-20%20series%20data%20manual_English_V2.9.pdf), this program uses serial interface only.
 
 ## Setup:
 
@@ -8,7 +9,7 @@ CO2 sensor for Home Assistant using a MH-Z19 CO2 sensor on a ESP8266 NodeMCU
 - Copy `include/config.h.example` as `include/config.h`
 - Set your configuration in `config.h`
 - Build/flash like any other PlatformIO project
-- The RX pin of MH-Z19 should be connected to GPIO15 (pin labeled D8) and TX of MH-Z19 to GPIO13 (pin labeled D7)
+- The RX pin of sensor should be connected to GPIO15 (pin labeled D8) and TX of sensor to GPIO13 (pin labeled D7)
 
 For Home Assistant you'll want something like this in your configuration.yaml:
 
