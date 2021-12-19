@@ -81,10 +81,19 @@ void setup()
   WiFi.mode(WIFI_STA);
   WiFi.hostname(HOSTNAME);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  int retries = 0;
   while (WiFi.status() != WL_CONNECTED)
   {
-    delay(500);
-    Serial.print(".");
+    if (retries < 150)
+    {
+      delay(500);
+      Serial.print(".");
+      retries++;
+    }
+    else
+    {
+      ESP.restart();
+    }
   }
   Serial.println();
   Serial.println("WiFi connected");
@@ -119,8 +128,8 @@ void setup()
     Serial.print("   ID of 0x56-0x58 represents a BMP 280,\n");
     Serial.print("        ID of 0x60 represents a BME 280.\n");
     Serial.print("        ID of 0x61 represents a BME 680.\n");
-    while (1)
-      delay(10);
+    delay(10000);
+    ESP.restart();
   }
 }
 
